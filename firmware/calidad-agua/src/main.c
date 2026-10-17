@@ -4,6 +4,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "water";
 
@@ -93,6 +94,9 @@ void app_main(void)
         return;
     }
 
-    xTaskCreate(sensor_task, "sensors", 4096, NULL, 5, NULL);
+    xTaskCreate(sensor_task,     "sensors",    4096, NULL, 5, NULL);
     xTaskCreate(processing_task, "processing", 4096, NULL, 4, NULL);
+
+    // WiFi starts after the measurement tasks, so sensing never depends on the network
+    wifi_manager_init();
 }
