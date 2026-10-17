@@ -15,7 +15,37 @@ typedef struct {
     float temperature;  // °C
 } reading_t;
 
+// Enum with the possible states of water quality
+typedef enum {
+    WATER_CLEAN,
+    WATER_DOUBTFUL,
+    WATER_CONTAMINATED
+} water_state_t;
+
 static QueueHandle_t sensors_queue;
+
+// Provisional rule-based classifier.
+// Later this function will be replaced by the Edge Impulse model.
+static water_state_t classify(const reading_t *r)
+{
+    if (r->tds >= 600 || r->ph < 6.0f || r->ph > 9.0f || r->turbidity >= 4.0f) {
+        return WATER_CONTAMINATED;
+    }
+    if (r->tds >= 300 || r->ph < 6.5f || r->ph > 8.5f || r->turbidity >= 1.0f) {
+        return WATER_DOUBTFUL;
+    }
+    return WATER_CLEAN;
+}
+
+static const char *state_to_string(water_state_t s)
+{
+    switch (s) {
+        case WATER_CLEAN:        return "CLEAN";
+        case WATER_DOUBTFUL:     return "DOUBTFUL";
+        case WATER_CONTAMINATED: return "CONTAMINATED";
+        default:                 return "UNKNOWN";
+    }
+}
 
 static void sensor_task(void *pvParameters){
 
@@ -41,6 +71,20 @@ static void sensor_task(void *pvParameters){
     } 
 }
 
+static void processing_task(void *pvParameters)
+{
+    reading_t r;
+
+    while (1) {
+        // Blocks here until a reading arrives (no CPU used while waiting)
+        if (xQueueReceive(sensors_queue, &r, portMAX_DELAY) == pdTRUE) {
+            water_state_t state = classify(&r);
+            ESP_LOGI(TAG, "Processed: TDS=%.0f pH=%.1f Turb=%.1f -> %s",
+                     r.tds, r.ph, r.turbidity, state_to_string(state));
+        }
+    }
+}
+
 void app_main(void)
 {
     sensors_queue = xQueueCreate(10, sizeof(reading_t));
@@ -50,4 +94,5 @@ void app_main(void)
     }
 
     xTaskCreate(sensor_task, "sensors", 4096, NULL, 5, NULL);
+    xTaskCreate(processing_task, "processing", 4096, NULL, 4, NULL);
 }
