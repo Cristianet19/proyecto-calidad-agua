@@ -23,8 +23,15 @@ typedef enum {
     WATER_CONTAMINATED
 } water_state_t;
 
-static QueueHandle_t sensors_queue;
+// Message sent from processing_task to mqtt_task
+typedef struct {
+    reading_t reading;
+    water_state_t state;
+} water_msg_t;
 
+static QueueHandle_t sensors_queue;
+static QueueHandle_t mqtt_queue;
+ 
 // Provisional rule-based classifier.
 // Later this function will be replaced by the Edge Impulse model.
 static water_state_t classify(const reading_t *r)
@@ -37,21 +44,21 @@ static water_state_t classify(const reading_t *r)
     }
     return WATER_CLEAN;
 }
-
+ 
 static const char *state_to_string(water_state_t s)
 {
     switch (s) {
-        case WATER_CLEAN:        return "CLEAN";
-        case WATER_DOUBTFUL:     return "DOUBTFUL";
-        case WATER_CONTAMINATED: return "CONTAMINATED";
-        default:                 return "UNKNOWN";
+    case WATER_CLEAN:        return "CLEAN";
+    case WATER_DOUBTFUL:     return "DOUBTFUL";
+    case WATER_CONTAMINATED: return "CONTAMINATED";
+    default:                 return "UNKNOWN";
     }
 }
-
-static void sensor_task(void *pvParameters){
-
+ 
+static void sensor_task(void *pvParameters)
+{
     TickType_t last_wake = xTaskGetTickCount();
-
+ 
     while (1) {
         // Generation of simulated values (to be replaced by real sensor readings later)
         reading_t r = {
@@ -62,30 +69,59 @@ static void sensor_task(void *pvParameters){
         };
         ESP_LOGI(TAG, "Generated: TDS=%.0f pH=%.1f Turb=%.1f T=%.1f",
                  r.tds, r.ph, r.turbidity, r.temperature);
-
-        // Values sended thru a queue and verification
+ 
+        // Values sent through a queue and verification
         if (xQueueSend(sensors_queue, &r, 0) != pdTRUE) {
             ESP_LOGW(TAG, "Queue full, reading dropped");
         }
-
-         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(2000));
-    } 
+ 
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(2000));
+    }
 }
-
+ 
 static void processing_task(void *pvParameters)
 {
     reading_t r;
-
+ 
     while (1) {
         // Blocks here until a reading arrives (no CPU used while waiting)
         if (xQueueReceive(sensors_queue, &r, portMAX_DELAY) == pdTRUE) {
             water_state_t state = classify(&r);
             ESP_LOGI(TAG, "Processed: TDS=%.0f pH=%.1f Turb=%.1f -> %s",
                      r.tds, r.ph, r.turbidity, state_to_string(state));
+ 
+            // Non-blocking send: if the network side is slow, drop the message
+            // instead of blocking the processing
+            water_msg_t msg = { .reading = r, .state = state };
+            if (xQueueSend(mqtt_queue, &msg, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "mqtt_queue full, message dropped");
+            }
         }
     }
 }
 
+static void mqtt_task(void *pvParameters)
+{
+    // Wait for WiFi before consuming messages.
+    // Meanwhile, mqtt_queue keeps buffering the latest readings
+    while (!wifi_manager_wait_connected(pdMS_TO_TICKS(10000))) {
+        ESP_LOGW(TAG, "mqtt_task: waiting for WiFi...");
+    }
+    ESP_LOGI(TAG, "mqtt_task: WiFi connected, start consuming messages");
+
+    water_msg_t msg;
+
+    while (1) {
+        // Blocks until processing_task sends a message
+        if (xQueueReceive(mqtt_queue, &msg, portMAX_DELAY) == pdTRUE) {
+            // For now we only log what we will publish later
+            ESP_LOGI(TAG, "MQTT (simulated): tds=%.0f ph=%.1f turb=%.1f temp=%.1f state=%s",
+                     msg.reading.tds, msg.reading.ph, msg.reading.turbidity,
+                     msg.reading.temperature, state_to_string(msg.state));
+        }
+    }
+}
+ 
 void app_main(void)
 {
     sensors_queue = xQueueCreate(10, sizeof(reading_t));
@@ -93,10 +129,17 @@ void app_main(void)
         ESP_LOGE(TAG, "Could not create the queue");
         return;
     }
-
+ 
+    mqtt_queue = xQueueCreate(10, sizeof(water_msg_t));
+    if (mqtt_queue == NULL) {
+        ESP_LOGE(TAG, "Could not create the mqtt queue");
+        return;
+    }
+ 
     xTaskCreate(sensor_task,     "sensors",    4096, NULL, 5, NULL);
     xTaskCreate(processing_task, "processing", 4096, NULL, 4, NULL);
-
+    xTaskCreate(mqtt_task, "mqtt", 4096, NULL, 3, NULL);
+ 
     // WiFi starts after the measurement tasks, so sensing never depends on the network
     wifi_manager_init();
 }
