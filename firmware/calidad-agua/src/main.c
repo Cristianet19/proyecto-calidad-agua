@@ -129,6 +129,23 @@ static void mqtt_task(void *pvParameters)
             ESP_LOGI(TAG, "MQTT (simulated): tds=%.0f ph=%.1f turb=%.1f temp=%.1f state=%s",
                      msg.reading.tds, msg.reading.ph, msg.reading.turbidity,
                      msg.reading.temperature, state_to_string(msg.state));
+            // MQTT Publication 
+            esp_mqtt_client_publish(client, "water/node1/state",
+                        state_to_string(msg.state), 0, 1, 0);
+                        
+            char payload[16];
+
+            snprintf(payload, sizeof(payload), "%.0f", msg.reading.tds);
+            esp_mqtt_client_publish(client, "water/node1/tds", payload, 0, 0, 0);
+
+            snprintf(payload, sizeof(payload), "%.1f", msg.reading.ph);
+            esp_mqtt_client_publish(client, "water/node1/ph", payload, 0, 0, 0);
+
+            snprintf(payload, sizeof(payload), "%.1f", msg.reading.turbidity);
+            esp_mqtt_client_publish(client, "water/node1/turbidity", payload, 0, 0, 0);
+
+            snprintf(payload, sizeof(payload), "%.1f", msg.reading.temperature);
+            esp_mqtt_client_publish(client, "water/node1/temperature", payload, 0, 0, 0);
         }
     }
 }
