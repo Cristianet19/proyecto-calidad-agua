@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "wifi_manager.h"
+#include "mqtt_client.h"
 
 static const char *TAG = "water";
 
@@ -103,11 +104,21 @@ static void processing_task(void *pvParameters)
 static void mqtt_task(void *pvParameters)
 {
     // Wait for WiFi before consuming messages.
-    // Meanwhile, mqtt_queue keeps buffering the latest readings
     while (!wifi_manager_wait_connected(pdMS_TO_TICKS(10000))) {
         ESP_LOGW(TAG, "mqtt_task: waiting for WiFi...");
     }
     ESP_LOGI(TAG, "mqtt_task: WiFi connected, start consuming messages");
+
+    // Create and start the MQTT client
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = "mqtt://192.168.1.144",
+    };
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Could not create the MQTT client");
+        vTaskDelete(NULL);
+    }
+    esp_mqtt_client_start(client);
 
     water_msg_t msg;
 
@@ -124,22 +135,30 @@ static void mqtt_task(void *pvParameters)
  
 void app_main(void)
 {
+    // Silence all components except our own tag
+    esp_log_level_set("*", ESP_LOG_WARN);
+    esp_log_level_set(TAG, ESP_LOG_INFO);
+    esp_log_level_set("mqtt_client", ESP_LOG_INFO);
+
     sensors_queue = xQueueCreate(10, sizeof(reading_t));
     if (sensors_queue == NULL) {
         ESP_LOGE(TAG, "Could not create the queue");
         return;
     }
- 
+
     mqtt_queue = xQueueCreate(10, sizeof(water_msg_t));
     if (mqtt_queue == NULL) {
         ESP_LOGE(TAG, "Could not create the mqtt queue");
         return;
     }
- 
+
     xTaskCreate(sensor_task,     "sensors",    4096, NULL, 5, NULL);
     xTaskCreate(processing_task, "processing", 4096, NULL, 4, NULL);
-    xTaskCreate(mqtt_task, "mqtt", 4096, NULL, 3, NULL);
- 
-    // WiFi starts after the measurement tasks, so sensing never depends on the network
+
+    // WiFi init creates the event group that mqtt_task waits on,
+    // so it must run before mqtt_task is created.
+    // Sensing and processing are already running, so they never depend on the network.
     wifi_manager_init();
+
+    xTaskCreate(mqtt_task, "mqtt", 4096, NULL, 3, NULL);
 }
