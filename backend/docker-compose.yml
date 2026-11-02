@@ -15,3 +15,17 @@ services:
       - ./nodered:/data
     depends_on:
       - mosquitto
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUX_PASSWORD}
+      - DOCKER_INFLUXDB_INIT_ORG=uji
+      - DOCKER_INFLUXDB_INIT_BUCKET=water
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUX_TOKEN}
+    volumes:
+      - ./influxdb:/var/lib/influxdb2
