@@ -6,6 +6,7 @@
 #include "esp_random.h"
 #include "wifi_manager.h"
 #include "mqtt_client.h"
+#include <string.h>
 
 static const char *TAG = "water";
 
@@ -101,6 +102,32 @@ static void processing_task(void *pvParameters)
     }
 }
 
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
+                               int32_t event_id, void *event_data)
+{
+    esp_mqtt_event_handle_t event = event_data;
+
+    switch ((esp_mqtt_event_id_t)event_id) {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "MQTT connected, subscribing to commands");
+        esp_mqtt_client_subscribe(event->client, "water/node1/cmd", 1);
+        break;
+    case MQTT_EVENT_DATA:
+        if (event->data_len == strlen("sample") &&
+            memcmp(event->data, "sample", event->data_len) == 0) {
+            ESP_LOGI(TAG, "Command received: sample");
+        } else if (event->data_len == strlen("alert_off") &&
+                   memcmp(event->data, "alert_off", event->data_len) == 0) {
+            ESP_LOGI(TAG, "Command received: alert_off");
+        } else {
+            ESP_LOGW(TAG, "Unknown command (%d bytes)", event->data_len);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 static void mqtt_task(void *pvParameters)
 {
     // Wait for WiFi before consuming messages.
@@ -118,6 +145,8 @@ static void mqtt_task(void *pvParameters)
         ESP_LOGE(TAG, "Could not create the MQTT client");
         vTaskDelete(NULL);
     }
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID,
+                                   mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);
 
     water_msg_t msg;
