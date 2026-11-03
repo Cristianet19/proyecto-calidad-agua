@@ -137,9 +137,10 @@ static void mqtt_task(void *pvParameters)
     ESP_LOGI(TAG, "mqtt_task: WiFi connected, start consuming messages");
 
     // Create and start the MQTT client
-    esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = "mqtt://192.168.1.144",
-    };
+    // First address is home address --- Second address is hotspot address
+    esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://192.168.1.144",};
+    //esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://10.118.17.205",};
+
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     if (client == NULL) {
         ESP_LOGE(TAG, "Could not create the MQTT client");
