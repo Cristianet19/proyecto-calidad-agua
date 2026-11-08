@@ -7,6 +7,9 @@
 #include "wifi_manager.h"
 #include "mqtt_client.h"
 #include <string.h>
+#include <stdbool.h>
+#include "freertos/semphr.h"
+#include "freertos/timers.h"
 
 static const char *TAG = "water";
 
@@ -25,14 +28,30 @@ typedef enum {
     WATER_CONTAMINATED
 } water_state_t;
 
-// Message sent from processing_task to mqtt_task
+// Kind of message travelling through mqtt_queue
+typedef enum {
+    MSG_READING,     // normal reading + state
+    MSG_HEARTBEAT    // periodic "I'm alive" message from the timer
+} msg_type_t;
+
+// Message sent to mqtt_task (from processing_task or from the heartbeat timer)
 typedef struct {
-    reading_t reading;
-    water_state_t state;
+    msg_type_t type;
+    reading_t reading;      // used only by MSG_READING
+    water_state_t state;    // used only by MSG_READING
+    bool measuring_ok;      // used only by MSG_HEARTBEAT: false = no recent readings
+    uint32_t uptime_s;      // used only by MSG_HEARTBEAT
 } water_msg_t;
 
 static QueueHandle_t sensors_queue;
 static QueueHandle_t mqtt_queue;
+static SemaphoreHandle_t sample_sem;
+
+#define HEARTBEAT_PERIOD_MS   30000   // how often the timer runs
+#define MEASURE_TIMEOUT_MS    10000   // max age of the last reading to consider "measuring OK"
+
+// Tick of the last reading made by sensor_task (written by sensor_task, read by the timer)
+static volatile TickType_t last_reading_tick;
  
 // Provisional rule-based classifier.
 // Later this function will be replaced by the Edge Impulse model.
@@ -59,7 +78,6 @@ static const char *state_to_string(water_state_t s)
  
 static void sensor_task(void *pvParameters)
 {
-    TickType_t last_wake = xTaskGetTickCount();
  
     while (1) {
         // Generation of simulated values (to be replaced by real sensor readings later)
@@ -69,6 +87,7 @@ static void sensor_task(void *pvParameters)
             .turbidity   = (esp_random() % 50) / 10.0f,
             .temperature = 18.0f + (esp_random() % 80) / 10.0f,
         };
+        
         ESP_LOGI(TAG, "Generated: TDS=%.0f pH=%.1f Turb=%.1f T=%.1f",
                  r.tds, r.ph, r.turbidity, r.temperature);
  
@@ -76,25 +95,62 @@ static void sensor_task(void *pvParameters)
         if (xQueueSend(sensors_queue, &r, 0) != pdTRUE) {
             ESP_LOGW(TAG, "Queue full, reading dropped");
         }
+        last_reading_tick = xTaskGetTickCount();
  
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(2000));
+        // Wait up to 2 s; wakes up earlier if the "sample" command gives the semaphore
+        xSemaphoreTake(sample_sem, pdMS_TO_TICKS(2000));
     }
+}
+
+#define ALERT_CONSECUTIVE 3   // consecutive CONTAMINATED readings needed to raise the alert
+
+// Alert actions. For now they only print a banner on the serial monitor.
+// Later: replace the body with LED on / LED off (or give the sAlert semaphore).
+static void alert_raise(void)
+{
+    ESP_LOGW(TAG, "----------------------------------------");
+    ESP_LOGW(TAG, "ALERT: WATER CONTAMINATED");
+    ESP_LOGW(TAG, "----------------------------------------");
+}
+
+static void alert_clear(void)
+{
+    ESP_LOGI(TAG, "----------------------------------------");
+    ESP_LOGI(TAG, "ALERT CLEARED: WATER NO LONGER CONTAMINATED");
+    ESP_LOGI(TAG, "----------------------------------------");
 }
  
 static void processing_task(void *pvParameters)
 {
     reading_t r;
+    int contaminated_count = 0;
+    bool alert_active = false;
  
     while (1) {
         // Blocks here until a reading arrives (no CPU used while waiting)
         if (xQueueReceive(sensors_queue, &r, portMAX_DELAY) == pdTRUE) {
             water_state_t state = classify(&r);
+
+        if (state == WATER_CONTAMINATED) {
+                contaminated_count++;
+                if (contaminated_count >= ALERT_CONSECUTIVE && !alert_active) {
+                    alert_active = true;
+                    alert_raise();
+                }
+            } else {
+                contaminated_count = 0;
+                if (alert_active) {
+                    alert_active = false;
+                    alert_clear();
+                }
+            }
+
             ESP_LOGI(TAG, "Processed: TDS=%.0f pH=%.1f Turb=%.1f -> %s",
                      r.tds, r.ph, r.turbidity, state_to_string(state));
  
             // Non-blocking send: if the network side is slow, drop the message
             // instead of blocking the processing
-            water_msg_t msg = { .reading = r, .state = state };
+            water_msg_t msg = { .type = MSG_READING, .reading = r, .state = state };
             if (xQueueSend(mqtt_queue, &msg, 0) != pdTRUE) {
                 ESP_LOGW(TAG, "mqtt_queue full, message dropped");
             }
@@ -116,6 +172,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         if (event->data_len == strlen("sample") &&
             memcmp(event->data, "sample", event->data_len) == 0) {
             ESP_LOGI(TAG, "Command received: sample");
+            xSemaphoreGive(sample_sem);
         } else if (event->data_len == strlen("alert_off") &&
                    memcmp(event->data, "alert_off", event->data_len) == 0) {
             ESP_LOGI(TAG, "Command received: alert_off");
@@ -152,32 +209,67 @@ static void mqtt_task(void *pvParameters)
 
     water_msg_t msg;
 
-    while (1) {
-        // Blocks until processing_task sends a message
+        while (1) {
+        // Blocks until processing_task (or the heartbeat timer) sends a message
         if (xQueueReceive(mqtt_queue, &msg, portMAX_DELAY) == pdTRUE) {
-            // For now we only log what we will publish later
-            ESP_LOGI(TAG, "MQTT (simulated): tds=%.0f ph=%.1f turb=%.1f temp=%.1f state=%s",
-                     msg.reading.tds, msg.reading.ph, msg.reading.turbidity,
-                     msg.reading.temperature, state_to_string(msg.state));
-            // MQTT Publication 
-            esp_mqtt_client_publish(client, "water/node1/state",
-                        state_to_string(msg.state), 0, 1, 0);
-                        
-            char payload[16];
+            char payload[24];
 
-            snprintf(payload, sizeof(payload), "%.0f", msg.reading.tds);
-            esp_mqtt_client_publish(client, "water/node1/tds", payload, 0, 0, 0);
+            if (msg.type == MSG_READING) {
+                ESP_LOGI(TAG, "MQTT publish: tds=%.0f ph=%.1f turb=%.1f temp=%.1f state=%s",
+                         msg.reading.tds, msg.reading.ph, msg.reading.turbidity,
+                         msg.reading.temperature, state_to_string(msg.state));
 
-            snprintf(payload, sizeof(payload), "%.1f", msg.reading.ph);
-            esp_mqtt_client_publish(client, "water/node1/ph", payload, 0, 0, 0);
+                esp_mqtt_client_publish(client, "water/node1/state",
+                                        state_to_string(msg.state), 0, 1, 0);
 
-            snprintf(payload, sizeof(payload), "%.1f", msg.reading.turbidity);
-            esp_mqtt_client_publish(client, "water/node1/turbidity", payload, 0, 0, 0);
+                snprintf(payload, sizeof(payload), "%.0f", msg.reading.tds);
+                esp_mqtt_client_publish(client, "water/node1/tds", payload, 0, 0, 0);
 
-            snprintf(payload, sizeof(payload), "%.1f", msg.reading.temperature);
-            esp_mqtt_client_publish(client, "water/node1/temperature", payload, 0, 0, 0);
+                snprintf(payload, sizeof(payload), "%.1f", msg.reading.ph);
+                esp_mqtt_client_publish(client, "water/node1/ph", payload, 0, 0, 0);
+
+                snprintf(payload, sizeof(payload), "%.1f", msg.reading.turbidity);
+                esp_mqtt_client_publish(client, "water/node1/turbidity", payload, 0, 0, 0);
+
+                snprintf(payload, sizeof(payload), "%.1f", msg.reading.temperature);
+                esp_mqtt_client_publish(client, "water/node1/temperature", payload, 0, 0, 0);
+
+            } else if (msg.type == MSG_HEARTBEAT) {
+                if (msg.measuring_ok) {
+                    snprintf(payload, sizeof(payload), "OK %lu", (unsigned long)msg.uptime_s);
+                } else {
+                    snprintf(payload, sizeof(payload), "NO_READINGS");
+                }
+                ESP_LOGI(TAG, "MQTT heartbeat: %s", payload);
+                esp_mqtt_client_publish(client, "water/node1/heartbeat", payload, 0, 0, 0);
+            }
         }
     }
+}
+
+// Runs in the FreeRTOS timer service task: it must never block.
+// It only checks the last reading age and drops a message in mqtt_queue.
+static void heartbeat_timer_cb(TimerHandle_t timer)
+{
+    // Read the last reading tick FIRST and the current tick AFTER:
+    // sensor_task may update the variable at any time, and this order
+    // guarantees now >= last (no unsigned wrap-around).
+    TickType_t last = last_reading_tick;
+    TickType_t now = xTaskGetTickCount();
+    bool ok = (now - last) < pdMS_TO_TICKS(MEASURE_TIMEOUT_MS);
+
+    if (!ok) {
+        ESP_LOGW(TAG, "----------------------------------------");
+        ESP_LOGW(TAG, "WARNING: NO RECENT READINGS FROM SENSORS");
+        ESP_LOGW(TAG, "----------------------------------------");
+    }
+
+    water_msg_t msg = {
+        .type = MSG_HEARTBEAT,
+        .measuring_ok = ok,
+        .uptime_s = (uint32_t)(now / configTICK_RATE_HZ),
+    };
+    xQueueSend(mqtt_queue, &msg, 0);
 }
  
 void app_main(void)
@@ -198,6 +290,12 @@ void app_main(void)
         ESP_LOGE(TAG, "Could not create the mqtt queue");
         return;
     }
+    sample_sem = xSemaphoreCreateBinary();
+    if (sample_sem == NULL) {
+        ESP_LOGE(TAG, "Could not create the sample semaphore");
+        return;
+    }
+    last_reading_tick = xTaskGetTickCount();
 
     xTaskCreate(sensor_task,     "sensors",    4096, NULL, 5, NULL);
     xTaskCreate(processing_task, "processing", 4096, NULL, 4, NULL);
@@ -208,4 +306,10 @@ void app_main(void)
     wifi_manager_init();
 
     xTaskCreate(mqtt_task, "mqtt", 4096, NULL, 3, NULL);
+    
+    TimerHandle_t hb_timer = xTimerCreate("heartbeat", pdMS_TO_TICKS(HEARTBEAT_PERIOD_MS),
+                                          pdTRUE, NULL, heartbeat_timer_cb);
+    if (hb_timer == NULL || xTimerStart(hb_timer, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Could not start the heartbeat timer");
+    }
 }
