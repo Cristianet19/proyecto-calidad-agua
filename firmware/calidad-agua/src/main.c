@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
+#include "ml_classifier.h"
  
 static const char *TAG = "water";
  
@@ -302,6 +303,15 @@ void app_main(void)
     esp_log_level_set("*", ESP_LOG_WARN);
     esp_log_level_set(TAG, ESP_LOG_INFO);
     esp_log_level_set("mqtt_client", ESP_LOG_INFO);
+    esp_log_level_set("ML_CLASSIFIER", ESP_LOG_INFO);
+
+    // TinyML model intialization
+    if (ml_classifier_init()) {
+        ESP_LOGI(TAG, "TinyML model initialized successfully");
+    } 
+    else {
+        ESP_LOGE(TAG, "TinyML initialization failed");
+    }
  
     sensors_queue = xQueueCreate(10, sizeof(reading_t));
     if (sensors_queue == NULL) {
@@ -337,4 +347,3 @@ void app_main(void)
         ESP_LOGE(TAG, "Could not start the heartbeat timer");
     }
 }
- 
