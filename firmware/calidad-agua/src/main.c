@@ -64,6 +64,9 @@ static volatile TickType_t last_reading_tick;
 #define PH_CONTAMINATED_MAX    9.0f
 #define TURB_DOUBTFUL          1.0f
 #define TURB_CONTAMINATED      4.0f
+// ML probability limits (probability that the water "requires treatment")
+#define ML_PROB_DOUBTFUL       0.40f   // below this: CLEAN
+#define ML_PROB_CONTAMINATED   0.60f   // above this: CONTAMINATED
  
 // Provisional rule-based classifier.
 // Later this function will be replaced by the ML model.
@@ -78,6 +81,24 @@ static water_state_t classify(const reading_t *r)
         return WATER_DOUBTFUL;
     }
     return WATER_CLEAN;
+}
+
+// ML-based classifier. If the model fails, it falls back to the rule-based one.
+static water_state_t classify_ml(const reading_t *r, float *prob_out)
+{
+    float p = ml_classifier_predict(r->ph, r->tds, r->turbidity, r->temperature);
+    *prob_out = p;
+
+    if (p < 0.0f) {
+        return classify(r);   // model error: use thresholds
+    }
+    if (p < ML_PROB_DOUBTFUL) {
+        return WATER_CLEAN;
+    }
+    if (p <= ML_PROB_CONTAMINATED) {
+        return WATER_DOUBTFUL;
+    }
+    return WATER_CONTAMINATED;
 }
  
 static const char *state_to_string(water_state_t s)
@@ -154,7 +175,11 @@ static void processing_task(void *pvParameters)
     while (1) {
         // Blocks here until a reading arrives (no CPU used while waiting)
         if (xQueueReceive(sensors_queue, &r, portMAX_DELAY) == pdTRUE) {
-            water_state_t state = classify(&r);
+            float ml_prob;
+            water_state_t state = classify_ml(&r, &ml_prob);
+            water_state_t rule_state = classify(&r);
+            ESP_LOGI(TAG, "ML probability=%.3f -> %s (rules say %s)",
+                        ml_prob, state_to_string(state), state_to_string(rule_state));
  
         if (state == WATER_CONTAMINATED) {
                 contaminated_count++;
@@ -220,8 +245,8 @@ static void mqtt_task(void *pvParameters)
  
     // Create and start the MQTT client
     // First address is home address --- Second address is hotspot address
-    //esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://192.168.1.144",};
-    esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://10.118.17.205",};
+    esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://192.168.1.144",};
+    //esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://10.118.17.205",};
  
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     if (client == NULL) {
@@ -332,7 +357,7 @@ void app_main(void)
     last_reading_tick = xTaskGetTickCount();
  
     xTaskCreate(sensor_task,     "sensors",    4096, NULL, 5, NULL);
-    xTaskCreate(processing_task, "processing", 4096, NULL, 4, NULL);
+    xTaskCreate(processing_task, "processing", 8192, NULL, 4, NULL);
  
     // WiFi init creates the event group that mqtt_task waits on,
     // so it must run before mqtt_task is created.
