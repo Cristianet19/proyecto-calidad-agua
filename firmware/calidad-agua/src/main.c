@@ -11,12 +11,24 @@
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
 #include "ml_classifier.h"
+#include "i2c_bus.h"
+#include "aht20.h"
+#include "bh1750.h"
  
 static const char *TAG = "water";
  
 #define SENSOR_PERIOD_MS      5000    // time between readings
 #define HEARTBEAT_PERIOD_MS   30000   // how often the timer runs
 #define MEASURE_TIMEOUT_MS    (3 * SENSOR_PERIOD_MS)   // max age of the last reading to consider "measuring OK"
+ 
+// Turbidity from the light sensor (BH1750).
+// turbidity_relative = 1 - lux / LUX_CLEAN_WATER  (0 = clean, 1 = no light gets through)
+// LUX_CLEAN_WATER MUST be calibrated: measure the lux with a glass of CLEAN water,
+// with the phone flashlight fixed and the setup shielded from ambient light.
+#define LUX_CLEAN_WATER       70.0f   // PROVISIONAL value: replace it after calibrating
+// Provisional scale to approach the NTU range of the training dataset (0..~72).
+// It is an approximation, not a real NTU measurement. Adjust it with tests.
+#define TURBIDITY_SCALE       50.0f
  
 // Struct with all the measurements of each sample
 typedef struct {
@@ -55,6 +67,10 @@ static SemaphoreHandle_t sample_sem;
 // Tick of the last reading made by sensor_task (written by sensor_task, read by the timer)
 static volatile TickType_t last_reading_tick;
  
+// Whether each real sensor was found at boot (set once in app_main, before the tasks start)
+static bool aht20_ok = false;
+static bool bh1750_ok = false;
+ 
 // Classification thresholds (provisional: recalibrate with the real sensors)
 #define TDS_DOUBTFUL_PPM       300
 #define TDS_CONTAMINATED_PPM   600
@@ -82,13 +98,13 @@ static water_state_t classify(const reading_t *r)
     }
     return WATER_CLEAN;
 }
-
+ 
 // ML-based classifier. If the model fails, it falls back to the rule-based one.
 static water_state_t classify_ml(const reading_t *r, float *prob_out)
 {
     float p = ml_classifier_predict(r->ph, r->tds, r->turbidity, r->temperature);
     *prob_out = p;
-
+ 
     if (p < 0.0f) {
         return classify(r);   // model error: use thresholds
     }
@@ -111,11 +127,51 @@ static const char *state_to_string(water_state_t s)
     }
 }
  
-// Simulated readings. Each function will be replaced by the real sensor read later.
+// Simulated readings (still pending the real sensors).
 static float read_tds(void)         { return 150 + (esp_random() % 200); }            // ppm
 static float read_ph(void)          { return 6.5f + (esp_random() % 20) / 10.0f; }
-static float read_turbidity(void)   { return (esp_random() % 50) / 10.0f; }           // relative value
-static float read_temperature(void) { return 18.0f + (esp_random() % 80) / 10.0f; }   // °C
+ 
+// Real turbidity from the BH1750: the less light goes through the glass, the more turbid.
+// If a read fails (or the sensor was not found), it keeps the last valid value.
+static float read_turbidity(void)
+{
+    static float last = 0.0f;
+ 
+    if (!bh1750_ok) {
+        return last;
+    }
+ 
+    float lux;
+    if (bh1750_read(&lux) == ESP_OK) {
+        float rel = 1.0f - lux / LUX_CLEAN_WATER;   // 0 = clean, 1 = opaque
+        if (rel < 0.0f) rel = 0.0f;
+        if (rel > 1.0f) rel = 1.0f;
+        last = rel * TURBIDITY_SCALE;
+        ESP_LOGI(TAG, "BH1750: %.1f lux -> turbidity %.1f", lux, last);
+    } else {
+        ESP_LOGW(TAG, "BH1750 read failed, using last value");
+    }
+    return last;
+}
+ 
+// Real temperature from the AHT20 (air temperature, not water).
+// If a read fails (or the sensor was not found), it keeps the last valid value.
+static float read_temperature(void)
+{
+    static float last = 22.0f;
+ 
+    if (!aht20_ok) {
+        return last;
+    }
+ 
+    float t, h;
+    if (aht20_read(&t, &h) == ESP_OK) {
+        last = t;
+    } else {
+        ESP_LOGW(TAG, "AHT20 read failed, using last value");
+    }
+    return last;
+}
  
 static reading_t read_sensors(void)
 {
@@ -131,7 +187,7 @@ static reading_t read_sensors(void)
 static void sensor_task(void *pvParameters)
 {
     while (1) {
-        // Generation of simulated values (to be replaced by real sensor readings later)
+        // TDS and pH are still simulated; turbidity (BH1750) and temperature (AHT20) are real
         reading_t r = read_sensors();
  
         ESP_LOGI(TAG, "Generated: TDS=%.0f pH=%.1f Turb=%.1f T=%.1f",
@@ -195,8 +251,8 @@ static void processing_task(void *pvParameters)
                 }
             }
  
-            ESP_LOGI(TAG, "Processed: TDS=%.0f pH=%.1f Turb=%.1f -> %s",
-                     r.tds, r.ph, r.turbidity, state_to_string(state));
+            ESP_LOGI(TAG, "Processed: TDS=%.0f pH=%.1f Turb=%.1f T=%.1f -> %s",
+                     r.tds, r.ph, r.turbidity, r.temperature, state_to_string(state));
  
             // Non-blocking send: if the network side is slow, drop the message
             // instead of blocking the processing
@@ -245,8 +301,8 @@ static void mqtt_task(void *pvParameters)
  
     // Create and start the MQTT client
     // First address is home address --- Second address is hotspot address
-    esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://192.168.1.144",};
-    //esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://10.118.17.205",};
+    //esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://192.168.1.144",};
+    esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://10.217.21.205",};
  
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     if (client == NULL) {
@@ -329,7 +385,27 @@ void app_main(void)
     esp_log_level_set(TAG, ESP_LOG_INFO);
     esp_log_level_set("mqtt_client", ESP_LOG_INFO);
     esp_log_level_set("ML_CLASSIFIER", ESP_LOG_INFO);
-
+    esp_log_level_set("i2c_bus", ESP_LOG_INFO);
+    esp_log_level_set("aht20", ESP_LOG_INFO);
+    esp_log_level_set("bh1750", ESP_LOG_INFO);
+ 
+    // Shared I2C bus (it must exist before any sensor driver)
+    ESP_ERROR_CHECK(i2c_bus_init());
+ 
+    // Real sensors. If one is not found, the board keeps running and that value
+    // stays at its last/default value (no reboot loop).
+    esp_err_t err = aht20_init();
+    aht20_ok = (err == ESP_OK);
+    if (!aht20_ok) {
+        ESP_LOGW(TAG, "AHT20 not found (%s): temperature will not be real", esp_err_to_name(err));
+    }
+ 
+    err = bh1750_init();
+    bh1750_ok = (err == ESP_OK);
+    if (!bh1750_ok) {
+        ESP_LOGW(TAG, "BH1750 not found (%s): turbidity will not be real", esp_err_to_name(err));
+    }
+ 
     // TinyML model intialization
     if (ml_classifier_init()) {
         ESP_LOGI(TAG, "TinyML model initialized successfully");
