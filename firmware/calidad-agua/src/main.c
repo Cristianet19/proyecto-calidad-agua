@@ -14,6 +14,7 @@
 #include "i2c_bus.h"
 #include "aht20.h"
 #include "bh1750.h"
+#include "led_status.h"
  
 static const char *TAG = "water";
  
@@ -128,7 +129,7 @@ static const char *state_to_string(water_state_t s)
 }
  
 // Simulated readings (still pending the real sensors).
-static float read_tds(void)         { return 150 + (esp_random() % 200); }            // ppm
+static float read_tds(void)         { return 700 + (esp_random() % 200); }            // ppm
 static float read_ph(void)          { return 6.5f + (esp_random() % 20) / 10.0f; }
  
 // Real turbidity from the BH1750: the less light goes through the glass, the more turbid.
@@ -206,13 +207,13 @@ static void sensor_task(void *pvParameters)
  
 #define ALERT_CONSECUTIVE 3   // consecutive CONTAMINATED readings needed to raise the alert
  
-// Alert actions. For now they only print a banner on the serial monitor.
-// Later: replace the body with LED on / LED off (or give the sAlert semaphore).
+// Alert actions: print a banner on the serial monitor and drive the red LED.
 static void alert_raise(void)
 {
     ESP_LOGW(TAG, "----------------------------------------");
     ESP_LOGW(TAG, "ALERT: WATER CONTAMINATED");
     ESP_LOGW(TAG, "----------------------------------------");
+    led_status_show(LED_STATUS_CONTAMINATED);   // red LED on
 }
  
 static void alert_clear(void)
@@ -220,6 +221,7 @@ static void alert_clear(void)
     ESP_LOGI(TAG, "----------------------------------------");
     ESP_LOGI(TAG, "ALERT CLEARED: WATER NO LONGER CONTAMINATED");
     ESP_LOGI(TAG, "----------------------------------------");
+    led_status_show(LED_STATUS_OFF);            // LED off
 }
  
 static void processing_task(void *pvParameters)
@@ -237,7 +239,7 @@ static void processing_task(void *pvParameters)
             ESP_LOGI(TAG, "ML probability=%.3f -> %s (rules say %s)",
                         ml_prob, state_to_string(state), state_to_string(rule_state));
  
-        if (state == WATER_CONTAMINATED) {
+            if (state == WATER_CONTAMINATED) {
                 contaminated_count++;
                 if (contaminated_count >= ALERT_CONSECUTIVE && !alert_active) {
                     alert_active = true;
@@ -315,7 +317,7 @@ static void mqtt_task(void *pvParameters)
  
     water_msg_t msg;
  
-        while (1) {
+    while (1) {
         // Blocks until processing_task (or the heartbeat timer) sends a message
         if (xQueueReceive(mqtt_queue, &msg, portMAX_DELAY) == pdTRUE) {
             char payload[24];
@@ -405,6 +407,9 @@ void app_main(void)
     if (!bh1750_ok) {
         ESP_LOGW(TAG, "BH1750 not found (%s): turbidity will not be real", esp_err_to_name(err));
     }
+ 
+    // Alert LED (starts turned off)
+    led_status_init();
  
     // TinyML model intialization
     if (ml_classifier_init()) {
