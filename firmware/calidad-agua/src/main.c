@@ -15,6 +15,7 @@
 #include "aht20.h"
 #include "bh1750.h"
 #include "led_status.h"
+#include "driver/gpio.h"
  
 static const char *TAG = "water";
  
@@ -64,6 +65,10 @@ typedef struct {
 static QueueHandle_t sensors_queue;
 static QueueHandle_t mqtt_queue;
 static SemaphoreHandle_t sample_sem;
+static SemaphoreHandle_t alert_off_sem;   // given by the button ISR, taken by alert_task
+ 
+#define BUTTON_PIN            GPIO_NUM_4
+#define BUTTON_DEBOUNCE_MS    200
  
 // Tick of the last reading made by sensor_task (written by sensor_task, read by the timer)
 static volatile TickType_t last_reading_tick;
@@ -129,7 +134,7 @@ static const char *state_to_string(water_state_t s)
 }
  
 // Simulated readings (still pending the real sensors).
-static float read_tds(void)         { return 700 + (esp_random() % 200); }            // ppm
+static float read_tds(void)         { return 150 + (esp_random() % 200); }            // ppm 150
 static float read_ph(void)          { return 6.5f + (esp_random() % 20) / 10.0f; }
  
 // Real turbidity from the BH1750: the less light goes through the glass, the more turbid.
@@ -224,6 +229,63 @@ static void alert_clear(void)
     led_status_show(LED_STATUS_OFF);            // LED off
 }
  
+static volatile uint32_t isr_count = 0;   // TEMPORARY debug: counts every button edge seen by the ISR
+ 
+// ISR: it only gives the semaphore (no logging, no LED, nothing slow).
+// Presses closer than BUTTON_DEBOUNCE_MS are ignored (contact bounce).
+static void IRAM_ATTR button_isr_handler(void *arg)
+{
+    isr_count++;   // TEMPORARY debug
+ 
+    static TickType_t last_tick = 0;
+    TickType_t now = xTaskGetTickCountFromISR();
+ 
+    if ((now - last_tick) < pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS)) {
+        return;
+    }
+    last_tick = now;
+ 
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(alert_off_sem, &woken);
+    if (woken) {
+        portYIELD_FROM_ISR(woken);
+    }
+}
+ 
+static void button_init(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << BUTTON_PIN,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,   // pressed = falling edge
+    };
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+ 
+    // The ISR service may already be installed by another component
+    esp_err_t e = gpio_install_isr_service(0);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(e);
+    }
+    ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON_PIN, button_isr_handler, NULL));
+}
+ 
+static void alert_task(void *pvParameters)
+{
+    while (1) {
+        if (xSemaphoreTake(alert_off_sem, pdMS_TO_TICKS(2000)) == pdTRUE) {
+            ESP_LOGI(TAG, "Button pressed: alert silenced, LED off");
+            led_status_show(LED_STATUS_OFF);
+        } 
+        else {
+            // TEMPORARY debug: runs every 2 s while nobody presses the button
+            ESP_LOGI(TAG, "DEBUG: pin level=%d, isr_count=%lu",
+                     gpio_get_level(BUTTON_PIN), (unsigned long)isr_count);
+        }
+    }
+}
+ 
 static void processing_task(void *pvParameters)
 {
     reading_t r;
@@ -282,8 +344,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGI(TAG, "Command received: sample");
             xSemaphoreGive(sample_sem);
         } else if (event->data_len == strlen("alert_off") &&
-                   memcmp(event->data, "alert_off", event->data_len) == 0) {
+           memcmp(event->data, "alert_off", event->data_len) == 0) {
             ESP_LOGI(TAG, "Command received: alert_off");
+            xSemaphoreGive(alert_off_sem);   // same effect as pressing the physical button
         } else {
             ESP_LOGW(TAG, "Unknown command (%d bytes)", event->data_len);
         }
@@ -303,8 +366,8 @@ static void mqtt_task(void *pvParameters)
  
     // Create and start the MQTT client
     // First address is home address --- Second address is hotspot address
-    //esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://192.168.1.144",};
-    esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://10.217.21.205",};
+    esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://192.168.1.144",};
+    //esp_mqtt_client_config_t mqtt_cfg = {.broker.address.uri = "mqtt://10.217.21.205",};
  
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     if (client == NULL) {
@@ -435,10 +498,18 @@ void app_main(void)
         ESP_LOGE(TAG, "Could not create the sample semaphore");
         return;
     }
+ 
+    alert_off_sem = xSemaphoreCreateBinary();
+    if (alert_off_sem == NULL) {
+        ESP_LOGE(TAG, "Could not create the alert_off semaphore");
+        return;
+    }
     last_reading_tick = xTaskGetTickCount();
  
     xTaskCreate(sensor_task,     "sensors",    4096, NULL, 5, NULL);
     xTaskCreate(processing_task, "processing", 8192, NULL, 4, NULL);
+    xTaskCreate(alert_task, "alert", 3072, NULL, 3, NULL);
+    button_init();
  
     // WiFi init creates the event group that mqtt_task waits on,
     // so it must run before mqtt_task is created.
