@@ -171,14 +171,15 @@
         "type": "ui-group",
         "name": "Water-Quality",
         "page": "0d953492438f5180",
-        "width": 6,
-        "height": 1,
+        "width": "12",
+        "height": "6",
         "order": 1,
-        "showTitle": true,
+        "showTitle": false,
         "className": "",
         "visible": "true",
         "disabled": "false",
         "groupType": "default",
+        "keepLoaded": false,
         "tab": ""
     },
     {
@@ -195,6 +196,17 @@
         "url": "http://influxdb:8086",
         "timeout": 10,
         "rejectUnauthorized": true
+    },
+    {
+        "id": "9bdd67c4f5679f73",
+        "type": "ui-spacer",
+        "group": "0c9229cef556d0de",
+        "name": "spacer",
+        "tooltip": "",
+        "order": 14,
+        "width": "12",
+        "height": 1,
+        "className": ""
     },
     {
         "id": "7ceaf575daf3822c",
@@ -261,18 +273,18 @@
         "z": "918bfad9227b4858",
         "name": "TDS graph",
         "group": "0c9229cef556d0de",
-        "order": 6,
+        "order": 7,
         "value": "payload",
         "valueType": "msg",
         "width": 3,
         "height": 3,
         "gtype": "gauge-half",
         "gstyle": "needle",
-        "title": "gauge",
+        "title": "TDS",
         "alwaysShowTitle": false,
         "floatingTitlePosition": "top-left",
-        "units": "units",
-        "icon": "",
+        "units": "ppm",
+        "icon": "water",
         "prefix": "",
         "suffix": "",
         "segments": [
@@ -303,11 +315,12 @@
         "styleRounded": true,
         "styleGlow": false,
         "className": "",
-        "x": 570,
+        "x": 515,
         "y": 340,
         "wires": [
             []
-        ]
+        ],
+        "l": false
     },
     {
         "id": "9346c5a5ce3e6433",
@@ -395,9 +408,9 @@
         "y": 1000,
         "wires": [
             [
-                "15ac6269a39381d5",
                 "2ebd372ba1197135",
-                "908ff25e83f3455f"
+                "908ff25e83f3455f",
+                "348c87f18877ec43"
             ]
         ]
     },
@@ -407,18 +420,18 @@
         "z": "918bfad9227b4858",
         "name": "Turbidity graph",
         "group": "0c9229cef556d0de",
-        "order": 9,
+        "order": 10,
         "value": "payload",
         "valueType": "msg",
         "width": 3,
         "height": 3,
         "gtype": "gauge-half",
         "gstyle": "needle",
-        "title": "gauge",
+        "title": "Turbidity",
         "alwaysShowTitle": false,
         "floatingTitlePosition": "top-left",
-        "units": "units",
-        "icon": "",
+        "units": "NTU",
+        "icon": "opacity",
         "prefix": "",
         "suffix": "",
         "segments": [
@@ -461,18 +474,18 @@
         "z": "918bfad9227b4858",
         "name": "pH graph",
         "group": "0c9229cef556d0de",
-        "order": 8,
+        "order": 9,
         "value": "payload",
         "valueType": "msg",
         "width": 3,
         "height": 3,
         "gtype": "gauge-half",
         "gstyle": "needle",
-        "title": "gauge",
+        "title": "pH",
         "alwaysShowTitle": false,
         "floatingTitlePosition": "top-left",
-        "units": "units",
-        "icon": "",
+        "units": "pH units",
+        "icon": "flask",
         "prefix": "",
         "suffix": "",
         "segments": [
@@ -527,18 +540,18 @@
         "z": "918bfad9227b4858",
         "name": "Temperature graph",
         "group": "0c9229cef556d0de",
-        "order": 7,
+        "order": 8,
         "value": "payload",
         "valueType": "msg",
         "width": 3,
         "height": 3,
         "gtype": "gauge-half",
         "gstyle": "needle",
-        "title": "gauge",
+        "title": "Temperature",
         "alwaysShowTitle": false,
         "floatingTitlePosition": "top-left",
-        "units": "units",
-        "icon": "",
+        "units": "°C",
+        "icon": "thermometer",
         "prefix": "",
         "suffix": "",
         "segments": [
@@ -568,22 +581,22 @@
         "type": "ui-text",
         "z": "918bfad9227b4858",
         "group": "0c9229cef556d0de",
-        "order": 4,
-        "width": 0,
-        "height": 0,
+        "order": 5,
+        "width": "12",
+        "height": "2",
         "name": "Quality Graph",
-        "label": "State",
+        "label": "",
         "format": "{{msg.payload}}",
-        "layout": "row-spread",
-        "style": false,
-        "font": "",
-        "fontSize": 16,
+        "layout": "col-center",
+        "style": true,
+        "font": "Georgia,Georgia,serif",
+        "fontSize": "40",
         "color": "#717171",
         "wrapText": false,
         "className": "",
         "value": "payload",
         "valueType": "msg",
-        "x": 580,
+        "x": 860,
         "y": 1000,
         "wires": []
     },
@@ -593,8 +606,8 @@
         "z": "918bfad9227b4858",
         "group": "0c9229cef556d0de",
         "name": "TDS History",
-        "label": "chart",
-        "order": 10,
+        "label": "TDS",
+        "order": 12,
         "chartType": "line",
         "category": "topic",
         "categoryType": "msg",
@@ -616,7 +629,7 @@
         "stackSeries": false,
         "pointShape": "circle",
         "pointRadius": 4,
-        "showLegend": true,
+        "showLegend": false,
         "removeOlder": "10",
         "removeOlderUnit": "60",
         "removeOlderPoints": "",
@@ -632,9 +645,9 @@
             "#c5b0d5"
         ],
         "textColor": [
-            "#666666"
+            "#000000"
         ],
-        "textColorDefault": true,
+        "textColorDefault": false,
         "gridColor": [
             "#e5e5e5"
         ],
@@ -655,8 +668,8 @@
         "z": "918bfad9227b4858",
         "group": "0c9229cef556d0de",
         "name": "Turbidity History",
-        "label": "chart",
-        "order": 11,
+        "label": "Turbidity",
+        "order": 13,
         "chartType": "line",
         "category": "topic",
         "categoryType": "msg",
@@ -678,7 +691,7 @@
         "stackSeries": false,
         "pointShape": "circle",
         "pointRadius": 4,
-        "showLegend": true,
+        "showLegend": false,
         "removeOlder": "10",
         "removeOlderUnit": "60",
         "removeOlderPoints": "",
@@ -694,9 +707,9 @@
             "#c5b0d5"
         ],
         "textColor": [
-            "#666666"
+            "#000000"
         ],
-        "textColorDefault": true,
+        "textColorDefault": false,
         "gridColor": [
             "#e5e5e5"
         ],
@@ -717,8 +730,8 @@
         "z": "918bfad9227b4858",
         "group": "0c9229cef556d0de",
         "name": "pH History",
-        "label": "chart",
-        "order": 12,
+        "label": "pH",
+        "order": 15,
         "chartType": "line",
         "category": "topic",
         "categoryType": "msg",
@@ -740,7 +753,7 @@
         "stackSeries": false,
         "pointShape": "circle",
         "pointRadius": 4,
-        "showLegend": true,
+        "showLegend": false,
         "removeOlder": "10",
         "removeOlderUnit": "60",
         "removeOlderPoints": "",
@@ -756,9 +769,9 @@
             "#c5b0d5"
         ],
         "textColor": [
-            "#666666"
+            "#000000"
         ],
-        "textColorDefault": true,
+        "textColorDefault": false,
         "gridColor": [
             "#e5e5e5"
         ],
@@ -779,8 +792,8 @@
         "z": "918bfad9227b4858",
         "group": "0c9229cef556d0de",
         "name": "Temperature History",
-        "label": "chart",
-        "order": 13,
+        "label": "Temperature",
+        "order": 16,
         "chartType": "line",
         "category": "topic",
         "categoryType": "msg",
@@ -802,7 +815,7 @@
         "stackSeries": false,
         "pointShape": "circle",
         "pointRadius": 4,
-        "showLegend": true,
+        "showLegend": false,
         "removeOlder": "10",
         "removeOlderUnit": "60",
         "removeOlderPoints": "",
@@ -818,9 +831,9 @@
             "#c5b0d5"
         ],
         "textColor": [
-            "#666666"
+            "#000000"
         ],
-        "textColorDefault": true,
+        "textColorDefault": false,
         "gridColor": [
             "#e5e5e5"
         ],
@@ -914,15 +927,15 @@
         "group": "0c9229cef556d0de",
         "name": "Measure Button",
         "label": "Measure Now",
-        "order": 2,
-        "width": 0,
-        "height": 0,
+        "order": 3,
+        "width": "6",
+        "height": "1",
         "emulateClick": false,
         "tooltip": "",
         "color": "",
         "bgcolor": "",
         "className": "",
-        "icon": "",
+        "icon": "timer",
         "iconPosition": "left",
         "payload": "sample",
         "payloadType": "str",
@@ -971,21 +984,21 @@
         "group": "0c9229cef556d0de",
         "name": "Stop Alert Button",
         "label": "Stop Alert",
-        "order": 3,
-        "width": 0,
-        "height": 0,
+        "order": 4,
+        "width": "6",
+        "height": "1",
         "emulateClick": false,
         "tooltip": "",
         "color": "",
         "bgcolor": "",
         "className": "",
-        "icon": "",
+        "icon": "alert-octagon",
         "iconPosition": "left",
         "payload": "alert_off",
         "payloadType": "str",
         "topic": "topic",
         "topicType": "msg",
-        "buttonColor": "",
+        "buttonColor": "#B22222",
         "textColor": "",
         "iconColor": "",
         "enableClick": true,
@@ -1050,7 +1063,7 @@
         "type": "ui-text",
         "z": "918bfad9227b4858",
         "group": "0c9229cef556d0de",
-        "order": 1,
+        "order": 2,
         "width": 0,
         "height": 0,
         "name": "Heartbeat Graph",
@@ -1137,7 +1150,7 @@
         "type": "ui-text",
         "z": "918bfad9227b4858",
         "group": "0c9229cef556d0de",
-        "order": 5,
+        "order": 6,
         "width": 0,
         "height": 0,
         "name": "Quality Alert",
@@ -1174,6 +1187,76 @@
             [
                 "ac9dec464b3a595e"
             ]
+        ]
+    },
+    {
+        "id": "348c87f18877ec43",
+        "type": "function",
+        "z": "918bfad9227b4858",
+        "name": "State Color Selector",
+        "func": "// Color the state text according to the water state\nconst colors = {\n    CLEAN: \"#2e7d32\",         // green\n    DOUBTFUL: \"#f9a825\",      // amber\n    CONTAMINATED: \"#c62828\"   // red\n};\nconst state = String(msg.payload).trim();\nmsg.ui_update = { color: colors[state] || \"#757575\" };   // grey if unknown\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 600,
+        "y": 1000,
+        "wires": [
+            [
+                "15ac6269a39381d5"
+            ]
+        ]
+    },
+    {
+        "id": "e2d5a2623f4646b5",
+        "type": "ui-template",
+        "z": "918bfad9227b4858",
+        "group": "0c9229cef556d0de",
+        "page": "",
+        "ui": "",
+        "name": "Spacer Black Line",
+        "order": 11,
+        "width": "12",
+        "height": "1",
+        "head": "",
+        "format": "<template>\n    <div style=\"display: flex; align-items: center; width: 100%; height: 100%;\">\n        <hr style=\"flex: 1; border: none; border-top: 2px solid #000; margin: 0; position: relative; top: 10px;\">\n    </div>\n</template>",
+        "noerr": 0,
+        "storeOutMessages": true,
+        "passthru": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 310,
+        "y": 1400,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "716417af77782cac",
+        "type": "ui-template",
+        "z": "918bfad9227b4858",
+        "group": "0c9229cef556d0de",
+        "page": "",
+        "ui": "",
+        "name": "Title",
+        "order": 1,
+        "width": "12",
+        "height": "1",
+        "head": "",
+        "format": "<template>\n    <div style=\"width: 100%;\">\n        <h2 style=\"text-align: center; margin: 0 0 8px 0;\">Water Quality Monitor</h2>\n        <hr style=\"border: none; border-top: 2px solid #000; margin: 0;\">\n    </div>\n</template>",
+        "noerr": 0,
+        "storeOutMessages": true,
+        "passthru": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 510,
+        "y": 1400,
+        "wires": [
+            []
         ]
     }
 ]

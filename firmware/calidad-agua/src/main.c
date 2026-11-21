@@ -16,6 +16,7 @@
 #include "bh1750.h"
 #include "led_status.h"
 #include "driver/gpio.h"
+#include "esp_pm.h"
  
 static const char *TAG = "water";
  
@@ -65,7 +66,7 @@ typedef struct {
 static QueueHandle_t sensors_queue;
 static QueueHandle_t mqtt_queue;
 static SemaphoreHandle_t sample_sem;
-static SemaphoreHandle_t alert_off_sem;   // given by the button ISR, taken by alert_task
+static SemaphoreHandle_t alert_off_sem;   // given by the button ISR or by the MQTT "alert_off" command, taken by alert_task
  
 #define BUTTON_PIN            GPIO_NUM_4
 #define BUTTON_DEBOUNCE_MS    200
@@ -229,14 +230,10 @@ static void alert_clear(void)
     led_status_show(LED_STATUS_OFF);            // LED off
 }
  
-static volatile uint32_t isr_count = 0;   // TEMPORARY debug: counts every button edge seen by the ISR
- 
 // ISR: it only gives the semaphore (no logging, no LED, nothing slow).
 // Presses closer than BUTTON_DEBOUNCE_MS are ignored (contact bounce).
 static void IRAM_ATTR button_isr_handler(void *arg)
 {
-    isr_count++;   // TEMPORARY debug
- 
     static TickType_t last_tick = 0;
     TickType_t now = xTaskGetTickCountFromISR();
  
@@ -271,17 +268,14 @@ static void button_init(void)
     ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON_PIN, button_isr_handler, NULL));
 }
  
+// Blocks until the alert is silenced (physical button or MQTT "alert_off" command).
+// It uses no timeout, so it stays blocked (no CPU, light sleep allowed) the rest of the time.
 static void alert_task(void *pvParameters)
 {
     while (1) {
-        if (xSemaphoreTake(alert_off_sem, pdMS_TO_TICKS(2000)) == pdTRUE) {
-            ESP_LOGI(TAG, "Button pressed: alert silenced, LED off");
+        if (xSemaphoreTake(alert_off_sem, portMAX_DELAY) == pdTRUE) {
+            ESP_LOGI(TAG, "Alert silenced, LED off");
             led_status_show(LED_STATUS_OFF);
-        } 
-        else {
-            // TEMPORARY debug: runs every 2 s while nobody presses the button
-            ESP_LOGI(TAG, "DEBUG: pin level=%d, isr_count=%lu",
-                     gpio_get_level(BUTTON_PIN), (unsigned long)isr_count);
         }
     }
 }
@@ -344,7 +338,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGI(TAG, "Command received: sample");
             xSemaphoreGive(sample_sem);
         } else if (event->data_len == strlen("alert_off") &&
-           memcmp(event->data, "alert_off", event->data_len) == 0) {
+                   memcmp(event->data, "alert_off", event->data_len) == 0) {
             ESP_LOGI(TAG, "Command received: alert_off");
             xSemaphoreGive(alert_off_sem);   // same effect as pressing the physical button
         } else {
@@ -454,6 +448,19 @@ void app_main(void)
     esp_log_level_set("aht20", ESP_LOG_INFO);
     esp_log_level_set("bh1750", ESP_LOG_INFO);
  
+    // Power management: scale the CPU frequency and enter light sleep when idle
+#ifdef CONFIG_PM_ENABLE
+    esp_pm_config_esp32_t pm_config = {
+        .max_freq_mhz = 240,
+        .min_freq_mhz = 80,
+        .light_sleep_enable = true,
+    };
+    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+    ESP_LOGI(TAG, "Power management enabled (80-240 MHz, light sleep)");
+#else
+    ESP_LOGW(TAG, "Power management NOT enabled: CONFIG_PM_ENABLE is missing");
+#endif
+ 
     // Shared I2C bus (it must exist before any sensor driver)
     ESP_ERROR_CHECK(i2c_bus_init());
  
@@ -474,10 +481,10 @@ void app_main(void)
     // Alert LED (starts turned off)
     led_status_init();
  
-    // TinyML model intialization
+    // TinyML model initialization
     if (ml_classifier_init()) {
         ESP_LOGI(TAG, "TinyML model initialized successfully");
-    } 
+    }
     else {
         ESP_LOGE(TAG, "TinyML initialization failed");
     }
@@ -508,7 +515,7 @@ void app_main(void)
  
     xTaskCreate(sensor_task,     "sensors",    4096, NULL, 5, NULL);
     xTaskCreate(processing_task, "processing", 8192, NULL, 4, NULL);
-    xTaskCreate(alert_task, "alert", 3072, NULL, 3, NULL);
+    xTaskCreate(alert_task,      "alert",      3072, NULL, 3, NULL);
     button_init();
  
     // WiFi init creates the event group that mqtt_task waits on,
@@ -517,7 +524,7 @@ void app_main(void)
     wifi_manager_init();
  
     xTaskCreate(mqtt_task, "mqtt", 4096, NULL, 3, NULL);
-    
+ 
     TimerHandle_t hb_timer = xTimerCreate("heartbeat", pdMS_TO_TICKS(HEARTBEAT_PERIOD_MS),
                                           pdTRUE, NULL, heartbeat_timer_cb);
     if (hb_timer == NULL || xTimerStart(hb_timer, 0) != pdPASS) {
